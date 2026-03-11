@@ -30,6 +30,7 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 import time
+import matplotlib.pyplot as plt
 
 # import a previous version of the HuggingFace Transformers package
 from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
@@ -114,7 +115,12 @@ def train(args, train_dataset, model, tokenizer):
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
+    
+    # Add this to track losses for plotting
+    node_losses = []
+    
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
+    
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
@@ -129,6 +135,8 @@ def train(args, train_dataset, model, tokenizer):
                       'labels':         batch[3]}
             outputs = model(**inputs)
             loss = outputs[0]  # model outputs are always tuple in pytorch-transformers (see doc)
+            node_losses.append(loss.item())
+            
             if step < 5:
                 logger.info("Minibatch %d Loss: %f", step + 1, loss.item())
             
@@ -193,7 +201,7 @@ def train(args, train_dataset, model, tokenizer):
         if len(iteration_times) > 0:
             avg_time = sum(iteration_times) / len(iteration_times)
             logger.info("Average time per iteration: %f seconds", avg_time)
-            
+
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
@@ -202,6 +210,23 @@ def train(args, train_dataset, model, tokenizer):
         # TODO(cos568): call evaluate() here to get the model performance after every epoch. (expect one line of code)
         evaluate(args, model, tokenizer)
         ##################################################
+
+
+    # Plot and save the loss curve for this specific node
+    plt.figure()
+    plt.plot(node_losses, label=f"Node {args.local_rank}")
+    plt.xlabel("Training Steps")
+    plt.ylabel("Loss")
+    plt.title(f"Loss Curve - Node {args.local_rank}")
+    plt.legend()
+    
+    # Ensure the output directory exists
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+        
+    plot_path = os.path.join(args.output_dir, f"loss_curve_rank_{args.local_rank}.png")
+    plt.savefig(plot_path)
+    logger.info("Saved loss curve to %s", plot_path)
 
     return global_step, tr_loss / global_step
 
