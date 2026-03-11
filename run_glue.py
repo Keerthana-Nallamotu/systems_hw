@@ -195,7 +195,7 @@ def train(args, train_dataset, model, tokenizer):
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
         
-    plot_path = os.path.join(args.output_dir, f"task2b_loss_curve_rank_{args.local_rank}.png")
+    plot_path = os.path.join(args.output_dir, f"task3_loss_curve_rank_{args.local_rank}.png")
     plt.savefig(plot_path)
 
     return global_step, tr_loss / global_step
