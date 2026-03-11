@@ -158,13 +158,14 @@ def train(args, train_dataset, model, tokenizer):
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                ##################################################
-                # TODO(cos568): perform a single optimization step (parameter update) by invoking the optimizer (expect one line of code)
                 optimizer.step()
-                ##################################################
-                scheduler.step() # Update learning rate schedule
+                scheduler.step()
                 model.zero_grad()
                 global_step += 1
+                
+                # Stop timer and record
+                end_time = time.time()
+                iteration_times.append(end_time - start_time)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
