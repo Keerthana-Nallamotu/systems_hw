@@ -138,7 +138,7 @@ def train(args, train_dataset, model, tokenizer):
             for step, batch in enumerate(epoch_iterator):
                 start_time = time.time()
                 model.train()
-                                batch = tuple(t.to(args.device) for t in batch)
+                batch = tuple(t.to(args.device) for t in batch)
                 inputs = {'input_ids':      batch[0],
                         'attention_mask': batch[1],
                         'token_type_ids': batch[2] if args.model_type in ['bert', 'xlnet'] else None,  # XLM don't use segment_ids
