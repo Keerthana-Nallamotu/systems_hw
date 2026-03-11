@@ -191,16 +191,18 @@ def train(args, train_dataset, model, tokenizer):
                 global_step += 1
 
                 end_time = time.time()
-                if step > 0: # Skip the first iteration
-                    iteration_times.append(end_time - start_time)
+                # if step > 0: # Skip the first iteration
+                iteration_times.append(end_time - start_time)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
 
-        if len(iteration_times) > 0:
-            avg_time = sum(iteration_times) / len(iteration_times)
-            logger.info("Average time per iteration: %f seconds", avg_time)
+        # if len(iteration_times) > 0:
+        print("ITERATION TIMES: ", iteration_times)
+        iteration_times.pop(0)
+        avg_time = sum(iteration_times) / len(iteration_times)
+        logger.info("Average time per iteration: %f seconds", avg_time)
 
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
@@ -285,12 +287,13 @@ def evaluate(args, model, tokenizer, prefix=""):
         result = compute_metrics(eval_task, preds, out_label_ids)
         results.update(result)
 
-        output_eval_file = os.path.join(eval_output_dir, "eval_results.txt")
-        with open(output_eval_file, "w") as writer:
-            logger.info("***** Eval results {} *****".format(prefix))
-            for key in sorted(result.keys()):
-                logger.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
+        if args.local_rank in [-1, 0]:
+            output_eval_file = os.path.join(eval_output_dir, "eval_results.txt")
+            with open(output_eval_file, "w") as writer:
+                logger.info("***** Eval results {} *****".format(prefix))
+                for key in sorted(result.keys()):
+                    logger.info("  %s = %s", key, str(result[key]))
+                    writer.write("%s = %s\n" % (key, str(result[key])))
 
     return results
 
