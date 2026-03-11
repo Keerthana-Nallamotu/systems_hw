@@ -80,7 +80,7 @@ def train(args, train_dataset, model, tokenizer):
         train_sampler = RandomSampler(train_dataset)
         
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
-    
+
     if args.max_steps > 0:
         t_total = args.max_steps
         args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
@@ -116,15 +116,15 @@ def train(args, train_dataset, model, tokenizer):
     tr_loss, logging_loss = 0.0, 0.0
     model.zero_grad()
     
-    # Trackers for deliverables
+    # Add this to track losses for plotting
     node_losses = []
-    iteration_times = []
     
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
-
+    
     set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
     for _ in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        iteration_times = []
         for step, batch in enumerate(epoch_iterator):
             start_time = time.time()
             model.train()
@@ -148,37 +148,57 @@ def train(args, train_dataset, model, tokenizer):
                     scaled_loss.backward()
                 torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
             else:
+                ##################################################
+                # Backward pass
                 loss.backward()
+                ##################################################
                 
-                # Gradient Synchronization with all_reduce
+                # Gradient Synchronization for Part 2(a)
                 if args.local_rank != -1:
                     for param in model.parameters():
                         if param.grad is None:
                             continue
+                            
+                        # 1. Prepare lists for gathering and scattering on the master node (Rank 0)
+                        if args.local_rank == 0:
+                            gather_list = [torch.zeros_like(param.grad) for _ in range(args.world_size)]
+                        else:
+                            gather_list = None
+                            
+                        # 2. Gather gradients from all workers to Rank 0
+                        torch.distributed.gather(param.grad, gather_list, dst=0)
                         
-                        # Use all_reduce to sum the gradients across all nodes
-                        torch.distributed.all_reduce(param.grad, op=torch.distributed.ReduceOp.SUM)
-                        
-                        # Divide by world_size to get the average
-                        param.grad /= args.world_size
+                        # 3. Average the gradients and prepare for scattering
+                        if args.local_rank == 0:
+                            avg_grad = sum(gather_list) / args.world_size
+                            scatter_list = [avg_grad.clone() for _ in range(args.world_size)]
+                        else:
+                            scatter_list = None
+                            
+                        # 4. Scatter the averaged gradients back to all workers
+                        torch.distributed.scatter(param.grad, scatter_list, src=0)
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
+                ##################################################
+                # TODO(cos568): perform a single optimization step (parameter update) by invoking the optimizer (expect one line of code)
                 optimizer.step()
-                scheduler.step()
+                ##################################################
+                scheduler.step() # Update learning rate schedule
                 model.zero_grad()
                 global_step += 1
-                
-                # Stop timer and record
+
                 end_time = time.time()
+                # if step > 0: # Skip the first iteration
                 iteration_times.append(end_time - start_time)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
 
+        # if len(iteration_times) > 0:
         print("ITERATION TIMES: ", iteration_times)
         iteration_times.pop(0)
         avg_time = sum(iteration_times) / len(iteration_times)
@@ -193,6 +213,8 @@ def train(args, train_dataset, model, tokenizer):
         evaluate(args, model, tokenizer)
         ##################################################
 
+
+    # Plot and save the loss curve for this specific node
     plt.figure()
     plt.plot(node_losses, label=f"Node {args.local_rank}")
     plt.xlabel("Training Steps")
@@ -200,11 +222,14 @@ def train(args, train_dataset, model, tokenizer):
     plt.title(f"Loss Curve - Node {args.local_rank}")
     plt.legend()
     
+    # Ensure the output directory exists
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
         
-    plot_path = os.path.join(args.output_dir, f"task2b_loss_curve_rank_{args.local_rank}.png")
+    plot_path = os.path.join(args.output_dir, f"loss_curve_rank_{args.local_rank}.png")
     plt.savefig(plot_path)
+    logger.info("Saved loss curve to %s", plot_path)
+
     return global_step, tr_loss / global_step
 
 
@@ -287,7 +312,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         str(task)))
     if os.path.exists(cached_features_file):
         logger.info("Loading features from cached file %s", cached_features_file)
-        features = torch.load(cached_features_file)
+        features = torch.load(cached_features_file, weights_only=False)
     else:
         logger.info("Creating features from dataset file at %s", args.data_dir)
         label_list = processor.get_labels()
@@ -406,10 +431,10 @@ def main():
         raise ValueError("Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(args.output_dir))
 
     # set up (distributed) training
+    # set up (distributed) training
     args.device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
     args.n_gpu = torch.cuda.device_count()
 
-    # Initialize distributed process group
     if args.local_rank != -1:
         torch.distributed.init_process_group(
             backend='gloo',
