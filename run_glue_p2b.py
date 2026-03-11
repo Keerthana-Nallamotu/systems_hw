@@ -23,16 +23,14 @@ import logging
 import os
 import random
 
-import time
-import matplotlib.pyplot as plt
-from torch.nn.parallel import DistributedDataParallel as DDP
-
 import numpy as np
 import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
+import time
+import matplotlib.pyplot as plt
 
 # import a previous version of the HuggingFace Transformers package
 from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
@@ -82,7 +80,7 @@ def train(args, train_dataset, model, tokenizer):
         train_sampler = RandomSampler(train_dataset)
         
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
-
+    
     if args.max_steps > 0:
         t_total = args.max_steps
         args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
@@ -150,21 +148,32 @@ def train(args, train_dataset, model, tokenizer):
                     scaled_loss.backward()
                 torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
             else:
-                ##################################################
-                # Backward pass
                 loss.backward()
-                ##################################################
+                
+                # Gradient Synchronization with all_reduce
+                if args.local_rank != -1:
+                    for param in model.parameters():
+                        if param.grad is None:
+                            continue
+                        
+                        # Use all_reduce to sum the gradients across all nodes
+                        torch.distributed.all_reduce(param.grad, op=torch.distributed.ReduceOp.SUM)
+                        
+                        # Divide by world_size to get the average
+                        param.grad /= args.world_size
+
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                ##################################################
-                # TODO(cos568): perform a single optimization step (parameter update) by invoking the optimizer (expect one line of code)
                 optimizer.step()
-                ##################################################
-                scheduler.step() # Update learning rate schedule
+                scheduler.step()
                 model.zero_grad()
                 global_step += 1
+                
+                # Stop timer and record
+                end_time = time.time()
+                iteration_times.append(end_time - start_time)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
@@ -196,7 +205,7 @@ def train(args, train_dataset, model, tokenizer):
         
     plot_path = os.path.join(args.output_dir, f"task2b_loss_curve_rank_{args.local_rank}.png")
     plt.savefig(plot_path)
-
+    
     return global_step, tr_loss / global_step
 
 
@@ -388,10 +397,10 @@ def main():
                              "See details at https://nvidia.github.io/apex/amp.html")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="For distributed training: local_rank. If single-node training, local_rank defaults to -1.")
+    
     parser.add_argument("--master_ip", type=str, default="", help="Master node IP address")
     parser.add_argument("--master_port", type=str, default="12345", help="Master node port")
     parser.add_argument("--world_size", type=int, default=1, help="Total number of nodes")
-    
     args = parser.parse_args()
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train and not args.overwrite_output_dir:
@@ -447,8 +456,7 @@ def main():
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
-    if args.local_rank != -1:
-        model = DDP(model)
+    model.to(args.device)
 
     logger.info("Training/evaluation parameters %s", args)
 
