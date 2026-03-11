@@ -119,6 +119,7 @@ def train(args, train_dataset, model, tokenizer):
     
     # Add this to track losses for plotting
     node_losses = []
+    iteration_times = []
     
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
     
